@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { supabase } from '../supabase'
+import * as db from '../db'
 import { List, SearchBar, Tag, Dialog, Toast, Form, Input, Stepper, FloatingBubble } from 'antd-mobile'
 import { AddOutline } from 'antd-mobile-icons'
 
 export default function Stock() {
-  const { team } = useAuth()
+  const { team, user } = useAuth()
   const [products, setProducts] = useState([])
   const [searchText, setSearchText] = useState('')
   const [showAdd, setShowAdd] = useState(false)
@@ -14,55 +14,54 @@ export default function Stock() {
   // 新货物表单
   const [newProduct, setNewProduct] = useState({ name: '', spec: '', unit: '个', unit_price: '', low_stock_threshold: '10' })
 
-  useEffect(() => {
+  const loadProducts = useCallback(async () => {
     if (!team) return
-    loadProducts()
-
-    // 实时订阅：监听货物变更
-    const channel = supabase
-      .channel('products-changes')
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'products', filter: `team_id=eq.${team.id}` },
-        () => { loadProducts() }
-      )
-      .subscribe()
-
-    return () => { supabase.removeChannel(channel) }
+    try {
+      const data = await db.getProducts(team.id)
+      setProducts(data || [])
+    } catch (e) { console.error('加载货物失败', e) }
+    setLoading(false)
   }, [team])
 
-  async function loadProducts() {
-    const { data } = await supabase
-      .from('products')
-      .select('*')
-      .eq('team_id', team.id)
-      .order('name')
-    setProducts(data || [])
-    setLoading(false)
-  }
+  useEffect(() => { loadProducts() }, [loadProducts])
+
+  // 轮询同步：每5秒刷新一次
+  useEffect(() => {
+    if (!team) return
+    const interval = setInterval(loadProducts, 5000)
+    return () => clearInterval(interval)
+  }, [loadProducts])
 
   async function handleAdd() {
-    if (!newProduct.name) { Toast.show('请输入货物名称'); return }
-    const { error } = await supabase.from('products').insert({
-      team_id: team.id,
-      name: newProduct.name,
-      spec: newProduct.spec || '',
-      unit: newProduct.unit || '个',
-      current_stock: 0,
-      unit_price: parseFloat(newProduct.unit_price) || 0,
-      low_stock_threshold: parseInt(newProduct.low_stock_threshold) || 10,
-    })
-    if (error) { Toast.show('添加失败: ' + error.message); return }
-
-    Toast.show('货物添加成功')
-    setNewProduct({ name: '', spec: '', unit: '个', unit_price: '', low_stock_threshold: '10' })
-    setShowAdd(false)
+    if (!newProduct.name.trim()) { Toast.show('请输入货物名称'); return }
+    try {
+      await db.addProduct({
+        team_id: team.id,
+        name: newProduct.name.trim(),
+        spec: newProduct.spec.trim(),
+        unit: newProduct.unit || '个',
+        unit_price: parseFloat(newProduct.unit_price) || 0,
+        low_stock_threshold: parseInt(newProduct.low_stock_threshold) || 10,
+      })
+      Toast.show('货物添加成功')
+      setNewProduct({ name: '', spec: '', unit: '个', unit_price: '', low_stock_threshold: '10' })
+      setShowAdd(false)
+      loadProducts()
+    } catch (e) {
+      Toast.show('添加失败: ' + e.message)
+    }
   }
 
   async function handleDelete(product) {
     const ok = await Dialog.confirm({ content: `确定删除"${product.name}"吗？`, confirmText: '删除' })
     if (!ok) return
-    await supabase.from('products').delete().eq('id', product.id)
-    Toast.show('已删除')
+    try {
+      await db.deleteProduct(product.id)
+      Toast.show('已删除')
+      loadProducts()
+    } catch (e) {
+      Toast.show('删除失败: ' + e.message)
+    }
   }
 
   const filtered = products.filter(p =>

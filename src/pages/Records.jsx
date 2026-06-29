@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import { supabase } from '../supabase'
+import * as db from '../db'
 import { List, NavBar, Tabs, SpinLoading, Empty } from 'antd-mobile'
 
 export default function Records() {
@@ -10,54 +10,33 @@ export default function Records() {
   const [activeTab, setActiveTab] = useState('all')
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(true)
-  const [productNames, setProductNames] = useState({})
 
-  useEffect(() => {
+  const loadRecords = useCallback(async () => {
     if (!team) return
-    loadProductNames().then(() => loadRecords())
-  }, [team, activeTab])
-
-  async function loadProductNames() {
-    const { data } = await supabase.from('products').select('id, name').eq('team_id', team.id)
-    const map = {}
-    if (data) data.forEach(p => { map[p.id] = p.name })
-    setProductNames(map)
-  }
-
-  async function loadRecords() {
     setLoading(true)
 
-    if (activeTab === 'all' || activeTab === 'in') {
-      const { data: inData } = await supabase
-        .from('stock_in_records')
-        .select('*')
-        .eq('team_id', team.id)
-        .order('created_at', { ascending: false })
-        .limit(activeTab === 'all' ? 100 : 200)
-      var inRecords = (inData || []).map(r => ({ ...r, type: 'in' }))
-    } else {
-      var inRecords = []
+    let inRecords = []
+    let outRecords = []
+
+    try {
+      if (activeTab === 'all' || activeTab === 'in') {
+        inRecords = (await db.getStockInRecords(team.id)).map(r => ({ ...r, type: 'in' }))
+      }
+      if (activeTab === 'all' || activeTab === 'out') {
+        outRecords = (await db.getStockOutRecords(team.id)).map(r => ({ ...r, type: 'out' }))
+      }
+    } catch (e) {
+      console.error('加载记录失败', e)
     }
 
-    if (activeTab === 'all' || activeTab === 'out') {
-      const { data: outData } = await supabase
-        .from('stock_out_records')
-        .select('*')
-        .eq('team_id', team.id)
-        .order('created_at', { ascending: false })
-        .limit(activeTab === 'all' ? 100 : 200)
-      var outRecords = (outData || []).map(r => ({ ...r, type: 'out' }))
-    } else {
-      var outRecords = []
-    }
-
-    // 合并并按时间排序
     const all = [...inRecords, ...outRecords].sort((a, b) =>
       new Date(b.created_at) - new Date(a.created_at)
     )
     setRecords(all.slice(0, 200))
     setLoading(false)
-  }
+  }, [team, activeTab])
+
+  useEffect(() => { loadRecords() }, [loadRecords])
 
   function formatTime(ts) {
     const d = new Date(ts)
@@ -97,7 +76,7 @@ export default function Records() {
                 }
                 title={
                   <span>
-                    {productNames[r.product_id] || '未知货物'}
+                    {r.product_name || r.product_id}
                     <span style={{ color: r.type === 'in' ? '#1677ff' : '#ff4d4f', marginLeft: 8, fontWeight: 600 }}>
                       {r.type === 'in' ? '+' : '-'}{r.quantity}
                     </span>
@@ -106,7 +85,8 @@ export default function Records() {
                 description={
                   <span style={{ fontSize: 12, color: '#999' }}>
                     {formatTime(r.created_at)}
-                    {r.type === 'in' && r.unit_price > 0 && ` · 单价¥${r.unit_price} · 合计¥${r.total_amount}`}
+                    {r.operator_name && ` · ${r.operator_name}`}
+                    {r.type === 'in' && r.unit_price > 0 && ` · 合计¥${r.total_amount}`}
                     {r.remark && ` · ${r.remark}`}
                   </span>
                 }

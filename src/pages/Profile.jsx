@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { Card, List, Button, Dialog, Toast } from 'antd-mobile'
@@ -11,22 +10,22 @@ export default function Profile() {
   function copyInviteCode() {
     if (team?.invite_code) {
       navigator.clipboard.writeText(team.invite_code)
-        .then(() => Toast.show('邀请码已复制到剪贴板'))
+        .then(() => Toast.show('邀请码已复制'))
         .catch(() => {
-          // Fallback for mobile
-          const textArea = document.createElement('textarea')
-          textArea.value = team.invite_code
-          document.body.appendChild(textArea)
-          textArea.select()
+          // fallback
+          const ta = document.createElement('textarea')
+          ta.value = team.invite_code
+          document.body.appendChild(ta)
+          ta.select()
           document.execCommand('copy')
-          document.body.removeChild(textArea)
+          document.body.removeChild(ta)
           Toast.show(`邀请码: ${team.invite_code}`)
         })
     }
   }
 
   async function handleSignOut() {
-    const ok = await Dialog.confirm({ content: '确定退出登录吗？', confirmText: '退出' })
+    const ok = await Dialog.confirm({ content: '确定退出吗？', confirmText: '退出' })
     if (ok) await signOut()
   }
 
@@ -36,7 +35,7 @@ export default function Profile() {
 
       <Card style={{ borderRadius: 12, marginTop: 8, padding: '16px 0', textAlign: 'center' }}>
         <div style={{ fontSize: 40, marginBottom: 8 }}>👤</div>
-        <div style={{ fontSize: 18, fontWeight: 600 }}>{user?.email}</div>
+        <div style={{ fontSize: 18, fontWeight: 600 }}>{user?.name || '用户'}</div>
         <div style={{ color: '#999', fontSize: 13, marginTop: 4 }}>
           所属团队: {team?.name || '未加入'}
         </div>
@@ -52,7 +51,7 @@ export default function Profile() {
         >
           邀请码
         </List.Item>
-        <List.Item extra={team ? `${new Date(team.created_at).toLocaleDateString('zh-CN')}` : '-'}>
+        <List.Item extra={team ? new Date(team.created_at).toLocaleDateString('zh-CN') : '-'}>
           创建时间
         </List.Item>
       </List>
@@ -69,7 +68,7 @@ export default function Profile() {
       </List>
 
       <div style={{ padding: '24px 0' }}>
-        <Button block color="danger" onClick={handleSignOut}>退出登录</Button>
+        <Button block color="danger" onClick={handleSignOut}>退出</Button>
       </div>
     </div>
   )

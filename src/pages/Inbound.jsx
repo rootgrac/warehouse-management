@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { supabase } from '../supabase'
+import * as db from '../db'
 import { List, SearchBar, Toast, Form, Input, Stepper, Card, TextArea, Button } from 'antd-mobile'
 
 export default function Inbound({ onDone }) {
@@ -13,14 +13,14 @@ export default function Inbound({ onDone }) {
   const [remark, setRemark] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  useEffect(() => {
-    if (team) loadProducts()
+  const loadProducts = useCallback(async () => {
+    if (team) {
+      const data = await db.getProducts(team.id)
+      setProducts(data || [])
+    }
   }, [team])
 
-  async function loadProducts() {
-    const { data } = await supabase.from('products').select('*').eq('team_id', team.id).order('name')
-    setProducts(data || [])
-  }
+  useEffect(() => { loadProducts() }, [loadProducts])
 
   function selectProduct(product) {
     setSelectedProduct(product)
@@ -36,30 +36,33 @@ export default function Inbound({ onDone }) {
     setSubmitting(true)
     const price = parseFloat(unitPrice) || 0
     const total = price * quantity
+    const newStock = selectedProduct.current_stock + quantity
 
-    // 1. 写入入库记录
-    const { error: recordError } = await supabase.from('stock_in_records').insert({
-      product_id: selectedProduct.id,
-      team_id: team.id,
-      quantity,
-      unit_price: price,
-      total_amount: total,
-      operator: user.id,
-      remark: remark || '',
-    })
-    if (recordError) { Toast.show('入库失败: ' + recordError.message); setSubmitting(false); return }
+    try {
+      // 写入入库记录
+      await db.addStockIn({
+        product_id: selectedProduct.id,
+        team_id: team.id,
+        product_name: selectedProduct.name,
+        quantity,
+        unit_price: price,
+        total_amount: total,
+        operator: user.id,
+        operator_name: user.name,
+        remark: remark || '',
+      })
 
-    // 2. 更新库存
-    const { error: updateError } = await supabase
-      .from('products')
-      .update({ current_stock: selectedProduct.current_stock + quantity, unit_price: price })
-      .eq('id', selectedProduct.id)
-    if (updateError) { Toast.show('库存更新失败: ' + updateError.message); setSubmitting(false); return }
+      // 更新库存
+      await db.updateProductStock(selectedProduct.id, newStock, price)
 
-    Toast.show(`✅ 入库成功：${selectedProduct.name} +${quantity} ${selectedProduct.unit}`)
-    setSelectedProduct(null)
-    setSubmitting(false)
-    if (onDone) onDone()
+      Toast.show(`✅ 入库成功：${selectedProduct.name} +${quantity} ${selectedProduct.unit}`)
+      setSelectedProduct(null)
+      if (onDone) onDone()
+    } catch (e) {
+      Toast.show('入库失败: ' + e.message)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   const filtered = products.filter(p =>

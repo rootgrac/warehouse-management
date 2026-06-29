@@ -1,5 +1,5 @@
-import { createContext, useContext, useState, useEffect } from 'react'
-import { supabase } from '../supabase'
+import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import * as db from '../db'
 
 const AuthContext = createContext(null)
 
@@ -7,103 +7,79 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [team, setTeam] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [version, setVersion] = useState(0)
 
+  const refresh = useCallback(() => setVersion(v => v + 1), [])
+
+  // 初始化：从 localStorage 恢复会话
   useEffect(() => {
-    // 检查当前登录状态
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null)
-      if (session?.user) loadTeam(session.user.id)
-      else setLoading(false)
-    })
-
-    // 监听登录状态变化
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
-      if (session?.user) loadTeam(session.user.id)
-      else { setTeam(null); setLoading(false) }
-    })
-
-    return () => listener.subscription.unsubscribe()
-  }, [])
-
-  async function loadTeam(userId) {
-    // 查询用户所属团队
-    const { data: member } = await supabase
-      .from('team_members')
-      .select('team_id, teams(*)')
-      .eq('user_id', userId)
-      .single()
-
-    if (member) {
-      setTeam(member.teams)
+    const savedUserId = localStorage.getItem('wm_user_id')
+    const savedTeamId = localStorage.getItem('wm_team_id')
+    if (savedUserId) {
+      db.getUser(savedUserId).then(u => {
+        if (u) {
+          setUser(u)
+          if (savedTeamId) {
+            db.getTeam(savedTeamId).then(t => {
+              if (t) setTeam(t)
+              setLoading(false)
+            }).catch(() => setLoading(false))
+          } else {
+            setLoading(false)
+          }
+        } else {
+          setLoading(false)
+        }
+      }).catch(() => setLoading(false))
+    } else {
+      setLoading(false)
     }
-    setLoading(false)
+  }, [version])
+
+  async function login(name, inviteCode) {
+    const foundTeam = await db.getTeamByCode(inviteCode)
+    if (!foundTeam) throw new Error('邀请码无效')
+
+    const userId = 'u_' + Date.now()
+    const newUser = await db.createUser(userId, name)
+
+    try {
+      await db.joinTeam(foundTeam.id, userId)
+    } catch (e) {
+      if (!e.message.includes('已在团队中')) throw e
+    }
+
+    localStorage.setItem('wm_user_id', userId)
+    localStorage.setItem('wm_team_id', foundTeam.id)
+    setUser(newUser)
+    setTeam(foundTeam)
+    return foundTeam
   }
 
-  async function signUp(email, password, name) {
-    const { data, error } = await supabase.auth.signUp({ email, password })
-    if (error) throw error
-    // 设置用户显示名
-    if (data.user) {
-      await supabase.from('profiles').upsert({ id: data.user.id, display_name: name })
-    }
-    return data
-  }
+  async function createTeamAndLogin(name, teamName) {
+    const userId = 'u_' + Date.now()
+    await db.createUser(userId, name)
+    const inviteCode = db.generateInviteCode()
+    const newTeam = await db.createTeam(teamName, inviteCode, userId)
 
-  async function signIn(email, password) {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) throw error
-    return data
+    localStorage.setItem('wm_user_id', userId)
+    localStorage.setItem('wm_team_id', newTeam.id)
+    setUser({ id: userId, name, created_at: new Date().toISOString() })
+    setTeam(newTeam)
+    return newTeam
   }
 
   async function signOut() {
-    await supabase.auth.signOut()
+    localStorage.removeItem('wm_user_id')
+    localStorage.removeItem('wm_team_id')
     setUser(null)
     setTeam(null)
   }
 
-  async function createTeam(name) {
-    const { data, error } = await supabase
-      .from('teams')
-      .insert({ name, invite_code: generateCode() })
-      .select()
-      .single()
-    if (error) throw error
-
-    // 创建者自动加入团队
-    await supabase.from('team_members').insert({ team_id: data.id, user_id: user.id })
-    setTeam(data)
-    return data
-  }
-
-  async function joinTeam(inviteCode) {
-    // 根据邀请码查找团队
-    const { data: teamData, error: teamError } = await supabase
-      .from('teams')
-      .select('*')
-      .eq('invite_code', inviteCode.toUpperCase())
-      .single()
-    if (teamError || !teamData) throw new Error('邀请码无效')
-
-    // 加入团队
-    const { error: joinError } = await supabase
-      .from('team_members')
-      .insert({ team_id: teamData.id, user_id: user.id })
-    if (joinError) throw joinError
-
-    setTeam(teamData)
-    return teamData
-  }
-
-  async function refreshTeam() {
-    if (user) await loadTeam(user.id)
-  }
-
   return (
     <AuthContext.Provider value={{
-      user, team, loading,
-      signUp, signIn, signOut,
-      createTeam, joinTeam, refreshTeam,
+      user, team, loading, refresh,
+      login, createTeamAndLogin, signOut,
     }}>
       {children}
     </AuthContext.Provider>
@@ -112,11 +88,4 @@ export function AuthProvider({ children }) {
 
 export function useAuth() {
   return useContext(AuthContext)
-}
-
-function generateCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-  let code = ''
-  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)]
-  return code
 }
