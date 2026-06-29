@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>网络诊断</title>
+<style>body{font-family:Arial;padding:20px;background:#f5f5f5}.r{padding:10px;margin:8px 0;border-radius:8px;color:#fff}.ok{background:#52c41a}.fail{background:#ff4d4f}.test{background:#faad14}</style></head>
+<body>
+<h2>🔍 网络诊断</h2>
+<p>测试各个域名是否能访问...</p>
+<div id="results"></div>
+<script>
+const tests = [
+  { name: 'GitHub Pages', url: 'https://rootgrac.github.io/warehouse-management/' },
+  { name: 'GitHub API', url: 'https://api.github.com/zen' },
+  { name: 'GitHub 主站', url: 'https://github.com' },
+  { name: 'Supabase', url: 'https://glmzdtsvulcfohhtfaxr.supabase.co' },
+]
+
+async function runTests() {
+  const div = document.getElementById('results')
+  for (const t of tests) {
+    const el = document.createElement('div')
+    el.className = 'r test'
+    el.textContent = `⏳ 测试 ${t.name}...`
+    div.appendChild(el)
+    try {
+      const res = await fetch(t.url, { mode: 'no-cors' })
+      el.className = 'r ok'
+      el.textContent = `✅ ${t.name} - 可以访问`
+    } catch(e) {
+      el.className = 'r fail'
+      el.textContent = `❌ ${t.name} - ${e.message}`
+    }
+  }
+}
+runTests()
+</script></body></html>
