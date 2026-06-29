@@ -1,89 +1,30 @@
-// 数据层 - localStorage 本地存储 + GitHub 同步
-// 先用本地存储保证可用，GitHub 可访问时自动同步
+// 数据层 - 纯浏览器本地存储
+// 数据存在 localStorage 中，无需任何后端
 
-const GITHUB_TOKEN = import.meta.env.VITE_GITHUB_TOKEN || ''
-const DATA_REPO = 'rootgrac/warehouse-data'
-const API_BASE = 'https://api.github.com'
-
-// ============ localStorage 操作 ============
+// ============ localStorage 工具函数 ============
 
 function localGet(key) {
   try {
     const raw = localStorage.getItem('wm_' + key)
     return raw ? JSON.parse(raw) : null
-  } catch { return null }
+  } catch (e) {
+    console.error('localStorage read error:', e)
+    return null
+  }
 }
 
 function localSet(key, data) {
-  localStorage.setItem('wm_' + key, JSON.stringify(data))
-}
-
-// ============ GitHub API 操作（可选同步）============
-
-async function githubAPI(path, options = {}) {
-  const url = `${API_BASE}/repos/${DATA_REPO}/contents/${path}`
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      'Authorization': `token ${GITHUB_TOKEN}`,
-      'Content-Type': 'application/json',
-      'Accept': 'application/vnd.github.v3+json',
-      ...options.headers,
-    },
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.message || `API error: ${res.status}`)
-  }
-  return res.json()
-}
-
-async function readGithubFile(path) {
   try {
-    const data = await githubAPI(path)
-    const content = JSON.parse(atob(data.content.replace(/\n/g, '')))
-    return { data, sha: data.sha }
+    localStorage.setItem('wm_' + key, JSON.stringify(data))
+    return true
   } catch (e) {
-    if (e.message.includes('404') || e.message.includes('Not Found')) return null
-    throw e
+    console.error('localStorage write error:', e)
+    return false
   }
 }
 
-async function writeGithubFile(path, content, message = 'update') {
-  let sha = undefined
-  try {
-    const existing = await readGithubFile(path)
-    if (existing) sha = existing.sha
-  } catch (e) {}
+// ============ 用户 ============
 
-  const body = {
-    message,
-    content: btoa(unescape(encodeURIComponent(JSON.stringify(content, null, 2)))),
-    ...(sha ? { sha } : {}),
-  }
-
-  return githubAPI(path, { method: 'PUT', body: JSON.stringify(body) })
-}
-
-let githubAvailable = null
-
-async function checkGithub() {
-  if (githubAvailable !== null) return githubAvailable
-  if (!GITHUB_TOKEN) { githubAvailable = false; return false }
-  try {
-    await fetch(`${API_BASE}/zen`, {
-      headers: { Authorization: `token ${GITHUB_TOKEN}` }
-    })
-    githubAvailable = true
-  } catch {
-    githubAvailable = false
-  }
-  return githubAvailable
-}
-
-// ============ 业务接口 ============
-
-// 用户
 export async function getUser(userId) {
   const users = localGet('users') || {}
   return users[userId] || null
@@ -96,7 +37,8 @@ export async function createUser(userId, name) {
   return users[userId]
 }
 
-// 团队
+// ============ 团队 ============
+
 export async function getTeam(teamId) {
   const teams = localGet('teams') || {}
   return teams[teamId] || null
@@ -110,10 +52,17 @@ export async function getTeamByCode(inviteCode) {
 export async function createTeam(name, inviteCode, createdBy) {
   const teams = localGet('teams') || {}
   const id = 't_' + Date.now()
-  const team = { id, name, invite_code: inviteCode, created_by: createdBy, created_at: new Date().toISOString() }
+  const team = {
+    id,
+    name,
+    invite_code: inviteCode,
+    created_by: createdBy,
+    created_at: new Date().toISOString(),
+  }
   teams[id] = team
   localSet('teams', teams)
 
+  // 创建者自动加入
   const members = localGet('members') || {}
   members[id] = [{ user_id: createdBy, joined_at: new Date().toISOString() }]
   localSet('members', members)
@@ -129,18 +78,6 @@ export async function joinTeam(teamId, userId) {
   }
   members[teamId].push({ user_id: userId, joined_at: new Date().toISOString() })
   localSet('members', members)
-
-  // 同步到 GitHub（如果可用）
-  const ok = await checkGithub()
-  if (ok) {
-    try {
-      const data = {
-        teams: localGet('teams'),
-        members: localGet('members'),
-      }
-      await writeGithubFile('data.json', data, `${userId} 加入团队`)
-    } catch (e) { console.log('GitHub sync failed:', e.message) }
-  }
 }
 
 export async function getTeamForUser(userId) {
@@ -154,7 +91,8 @@ export async function getTeamForUser(userId) {
   return null
 }
 
-// 货物
+// ============ 货物 ============
+
 export async function getProducts(teamId) {
   const products = localGet('products') || {}
   return Object.values(products).filter(p => p.team_id === teamId)
@@ -163,7 +101,13 @@ export async function getProducts(teamId) {
 export async function addProduct(product) {
   const products = localGet('products') || {}
   const id = 'p_' + Date.now()
-  const newProduct = { id, ...product, current_stock: 0, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+  const newProduct = {
+    id,
+    ...product,
+    current_stock: 0,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }
   products[id] = newProduct
   localSet('products', products)
   return newProduct
@@ -185,10 +129,15 @@ export async function deleteProduct(productId) {
   localSet('products', products)
 }
 
-// 入库记录
+// ============ 入库记录 ============
+
 export async function addStockIn(record) {
   const records = localGet('stock_in') || []
-  records.unshift({ id: 'si_' + Date.now(), ...record, created_at: new Date().toISOString() })
+  records.unshift({
+    id: 'si_' + Date.now(),
+    ...record,
+    created_at: new Date().toISOString(),
+  })
   localSet('stock_in', records)
   return records[0]
 }
@@ -197,10 +146,15 @@ export async function getStockInRecords(teamId) {
   return (localGet('stock_in') || []).filter(r => r.team_id === teamId)
 }
 
-// 出库记录
+// ============ 出库记录 ============
+
 export async function addStockOut(record) {
   const records = localGet('stock_out') || []
-  records.unshift({ id: 'so_' + Date.now(), ...record, created_at: new Date().toISOString() })
+  records.unshift({
+    id: 'so_' + Date.now(),
+    ...record,
+    created_at: new Date().toISOString(),
+  })
   localSet('stock_out', records)
   return records[0]
 }
@@ -209,7 +163,8 @@ export async function getStockOutRecords(teamId) {
   return (localGet('stock_out') || []).filter(r => r.team_id === teamId)
 }
 
-// 邀请码
+// ============ 邀请码 ============
+
 export function generateInviteCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
   let code = ''
